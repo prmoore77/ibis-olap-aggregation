@@ -4,6 +4,9 @@ import tempfile
 import ibis
 import logging
 import pandas as pd
+import sqlparse
+from classes.hierarchy_dimension_table import HierarchyDimensionTable
+
 
 # Setup logging
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -23,6 +26,11 @@ def main():
     connection = ibis.duckdb.connect('./data/grocery_store.duckdb')
     logger.info(msg=connection.list_tables())
 
+    product_nodes = HierarchyDimensionTable(ibis_expr=connection.table('product_nodes'),
+                                            node_id_column="node_id",
+                                            parent_node_id_column="parent_node_id"
+                                            )
+
     facts = connection.table('sales_facts')
     products = connection.table('product_aggregation_dim')
 
@@ -34,22 +42,36 @@ def main():
                                product_node_name=product_node_name
                                )
     sales_fact_aggregation = \
-    (facts.join(products, predicates=(facts.product_id == products.descendant_node_natural_key))
-     .group_by([products.product_node_name,
-                products.product_level_name,
-                products.ancestor_level_number,
-                products.ancestor_node_sort_order
-                ]
-               )
-     .aggregate(sum_sales_amount=facts.sales_amount.sum(),
-                sum_unit_quantity=facts.unit_quantity.sum(),
-                distinct_customer_count=facts.customer_id.nunique(),
-                count_of_fact_records=facts.count()
-                )
-     .sort_by(products.ancestor_node_sort_order)
-     )[
-        'product_node_name', 'product_level_name', 'sum_sales_amount', 'sum_unit_quantity', 'distinct_customer_count', 'count_of_fact_records']
-    print(sales_fact_aggregation.compile())
+        (facts.join(products, predicates=(facts.product_id == products.descendant_node_natural_key))
+         .group_by([products.product_node_name,
+                    products.product_level_name,
+                    products.ancestor_node_sort_order
+                    ]
+                   )
+         .aggregate(sum_sales_amount=facts.sales_amount.sum(),
+                    sum_unit_quantity=facts.unit_quantity.sum(),
+                    distinct_customer_count=facts.customer_id.nunique(),
+                    count_of_fact_records=facts.count()
+                    )
+         .sort_by(products.ancestor_node_sort_order)
+         )[
+            'product_node_name',
+            'product_level_name',
+            'sum_sales_amount',
+            'sum_unit_quantity',
+            'distinct_customer_count',
+            'count_of_fact_records'
+        ]
+    # Format/Print out the SQL - and replace binds with literals (for easy copy/paste)
+    print(sqlparse.format(sql=str(sales_fact_aggregation.compile().compile(compile_kwargs={"literal_binds": True})),
+                          reindent=True,
+                          keyword_case='upper',
+                          identifier_case='lower',
+                          use_space_around_operators=True,
+                          comma_first=True
+                          )
+          )
+
     df = sales_fact_aggregation.execute()
     print(df)
 

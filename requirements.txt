@@ -2,3 +2,5 @@ ibis-framework==3.0.2
 SQLAlchemy==1.4.37
 duckdb==0.3.4
 duckdb-engine==0.1.9
+sqlparse==0.4.2
+
