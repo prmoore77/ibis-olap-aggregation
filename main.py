@@ -1,16 +1,10 @@
-import os
-import sys
-import tempfile
 import ibis
 import logging
 import pandas as pd
 import sqlparse
-from classes.hierarchy_dimension_table import HierarchyDimensionTable
+from classes.hierarchy_dimension_table import HierarchyDimension
+from config import logger
 
-
-# Setup logging
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger()
 
 # Setup ibis
 ibis.options.interactive = False
@@ -26,13 +20,13 @@ def main():
     connection = ibis.duckdb.connect('./data/grocery_store.duckdb')
     logger.info(msg=connection.list_tables())
 
-    product_nodes = HierarchyDimensionTable(ibis_expr=connection.table('product_nodes'),
-                                            node_id_column="node_id",
-                                            parent_node_id_column="parent_node_id"
-                                            )
-
+    product_dimension = HierarchyDimension(dimension_name="product",
+                                           ibis_expr=connection.table('product_nodes'),
+                                           node_id_column="node_id",
+                                           parent_node_id_column="parent_node_id"
+                                           )
+    products = product_dimension.aggregation_dim_ibis_expr
     facts = connection.table('sales_facts')
-    products = connection.table('product_aggregation_dim')
 
     level_indent_pad = ibis.literal('-').lpad(((products.ancestor_level_number - 1) * 5), '-')
     product_level_name = level_indent_pad.concat(products.ancestor_level_name)
@@ -76,6 +70,5 @@ def main():
     print(df)
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     main()
