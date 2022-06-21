@@ -11,7 +11,7 @@ class HierarchyDimension(object):
                  ):
         self.dimension_name = dimension_name
         self.ibis_expr: Expr = ibis_expr
-        # TODO: Try to find another way to get the backend without using an unprotected method
+        # TODO: Try to find another way to get the backend without using a protected method
         self.connection = ibis_expr._find_backend()
         # TODO: try to find an unprotected attribute for this...
         self.source_table_name = self.ibis_expr._key[2].name

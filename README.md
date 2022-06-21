@@ -1,5 +1,7 @@
 # ibis-olap-aggregation
-Demo of Ibis for OLAP-style hierarchical aggregation
+Demo of Ibis for OLAP-style hierarchical aggregation.
+
+This is an attempt to use Ibis for the SQL aggregation approach detailed [here](https://medium.com/@philipmoore_53699/olap-hierarchical-aggregation-with-sql-6c45ebc206d7).
 
 # Setup
 
