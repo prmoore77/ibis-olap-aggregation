@@ -1,5 +1,4 @@
 import ibis
-import logging
 import pandas as pd
 import sqlparse
 from classes.hierarchy_dimension_table import HierarchyDimension
@@ -22,8 +21,8 @@ def main():
 
     product_dimension = HierarchyDimension(dimension_name="product",
                                            ibis_expr=connection.table('product_nodes'),
-                                           node_id_column="node_id",
-                                           parent_node_id_column="parent_node_id"
+                                           node_id_column_name="node_id",
+                                           parent_node_id_column_name="parent_node_id"
                                            )
     products = product_dimension.aggregation_dim_ibis_expr
     facts = connection.table('sales_facts')
