@@ -9,7 +9,6 @@ import re
 
 
 class CreateTableAs(Executable, ClauseElement):
-
     def __init__(self, name, query):
         self.name = name
         self.query = query
@@ -75,25 +74,17 @@ class HierarchyDimension(object):
 
         self.aggregation_dim_ibis_expr = self.ibis_connection.table(self._aggregation_dim_table_name)
 
-    def execute_ibis_sql(self, sql_text: str):
-        logger.info(msg=f"Executing SQL: {sql_text}")
-        return self.ibis_connection.raw_sql(query=sql_text)
-
-    def _validate_columns(self):
-        if self.node_id_column not in self.ibis_expr.columns:
-            raise ValueError
-
-        if self.parent_node_id_column not in self.ibis_expr.columns:
-            raise ValueError
-
     def _get_nodes_query(self):
         nodes_query = \
-            select(self.source_table,
-                   case((self.parent_node_id_column.is_(None), True),
-                        else_=False).label("is_root"),
-                   case((self.node_id_column.in_(select(self.parent_node_id_column)), False),
-                        else_=True
-                        ).label("is_leaf")
+            select([self.node_id_column.label("node_id")] +
+                   [column for column in self.source_table.columns if
+                    column.name not in [self.node_id_column.name, self.parent_node_id_column.name]] +
+                   [self.parent_node_id_column.label("parent_node_id")] +
+                   [case((self.parent_node_id_column.is_(None), True),
+                         else_=False).label("is_root"),
+                    case((self.node_id_column.in_(select(self.parent_node_id_column)), False),
+                         else_=True
+                         ).label("is_leaf")]
                    )
 
         return nodes_query
@@ -106,8 +97,9 @@ class HierarchyDimension(object):
                                                                            override_dict=dict(level_number=1))
 
         recursive_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query,
-                                                                              table_alias="nodes", override_dict=dict(
-                level_number="(parent_nodes.level_number + 1)"))
+                                                                              table_alias="nodes",
+                                                                              override_dict=dict(level_number="(parent_nodes.level_number + 1)")
+                                                                              )
 
         nodes_alias = self._nodes_query.alias("nodes")
         parent_nodes = select([column for column in nodes_alias.columns] +
@@ -158,7 +150,7 @@ class HierarchyDimension(object):
             [column for column in node_sort_order_query.columns if column.name not in ["node_json", "node_json_path"]] +
             [literal_column(node_json_expr).label("node_json")] +
             level_columns
-            )
+        )
 
         reporting_dim_table_name = f"{self.dimension_name}_reporting_dim"
         self.sql_connection.execute(CreateTableAs(reporting_dim_table_name, reporting_dim_query))
@@ -197,7 +189,7 @@ class HierarchyDimension(object):
 
         ancestor_columns = []
         for column in recursive_cte_query.columns:
-            if column.name not in ['node_json', 'node_json_path']:
+            if column.name not in ['node_json', 'node_json_path', 'parent_node_id']:
                 ancestor_columns.append(func.struct_extract(func.list_extract(recursive_cte_query.c.node_json_path, 1),
                                                             literal_column(f"'{column.name}'")
                                                             ).label(f"ancestor_{column.name}")
@@ -205,7 +197,7 @@ class HierarchyDimension(object):
 
         descendant_columns = []
         for column in recursive_cte_query.columns:
-            if column.name not in ['node_json', 'node_json_path']:
+            if column.name not in ['node_json', 'node_json_path', 'parent_node_id']:
                 descendant_columns.append(column.label(f"descendant_{column.name}"))
 
         ancestor_descendant_query = select(ancestor_columns +
@@ -214,7 +206,7 @@ class HierarchyDimension(object):
 
         aggregation_dim_query = select(ancestor_descendant_query,
                                        (
-                                                   ancestor_descendant_query.c.descendant_level_number - ancestor_descendant_query.c.ancestor_level_number).label(
+                                               ancestor_descendant_query.c.descendant_level_number - ancestor_descendant_query.c.ancestor_level_number).label(
                                            "net_level")
                                        )
 
