@@ -64,9 +64,11 @@ class HierarchyDimension(object):
 
         self._nodes_query = self._get_nodes_query()
         self._reporting_dim_table_name = self._create_reporting_dim_table()
-        self._reporting_dim_table = Table(self._reporting_dim_table_name, self.metadata, autoload_with=self.sql_connection)
+        self._reporting_dim_table = Table(self._reporting_dim_table_name, self.metadata,
+                                          autoload_with=self.sql_connection)
         self._aggregation_dim_table_name = self._create_aggregation_dim_table()
-        self._aggregation_dim_table = Table(self._aggregation_dim_table_name, self.metadata, autoload_with=self.sql_connection)
+        self._aggregation_dim_table = Table(self._aggregation_dim_table_name, self.metadata,
+                                            autoload_with=self.sql_connection)
 
         # Ibis doesn't seem to like the struct type from DuckDB, so we can't use the reporting_dim_table yet...
         # self.reporting_dim_ibis_expr = self.ibis_connection.table(self._reporting_dim_table_name)
@@ -100,9 +102,12 @@ class HierarchyDimension(object):
         if not hasattr(self, "_nodes_query"):
             raise RuntimeError("The nodes_query MUST be created to run this method!")
 
-        anchor_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query, table_alias="nodes", override_dict=dict(level_number=1))
+        anchor_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query, table_alias="nodes",
+                                                                           override_dict=dict(level_number=1))
 
-        recursive_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query, table_alias="nodes", override_dict=dict(level_number="(parent_nodes.level_number + 1)"))
+        recursive_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query,
+                                                                              table_alias="nodes", override_dict=dict(
+                level_number="(parent_nodes.level_number + 1)"))
 
         nodes_alias = self._nodes_query.alias("nodes")
         parent_nodes = select([column for column in nodes_alias.columns] +
@@ -127,13 +132,16 @@ class HierarchyDimension(object):
         )
 
         node_sort_order_query = select([column for column in recursive_cte_query.columns] +
-                                     [func.row_number().over(
-                                         order_by=func.replace(cast(recursive_cte_query.c.node_json_path, String), ']',
-                                                               '').asc()).label("node_sort_order")
-                                      ]
-                                     ).cte("node_sort_order_query")
+                                       [func.row_number().over(
+                                           order_by=func.replace(cast(recursive_cte_query.c.node_json_path, String),
+                                                                 ']',
+                                                                 '').asc()).label("node_sort_order")
+                                        ]
+                                       ).cte("node_sort_order_query")
 
-        node_json_expr: str = _create_struct_literal(query=self._nodes_query, table_alias=None, override_dict=dict(level_number="level_number", node_sort_order="node_sort_order"))
+        node_json_expr: str = _create_struct_literal(query=self._nodes_query, table_alias=None,
+                                                     override_dict=dict(level_number="level_number",
+                                                                        node_sort_order="node_sort_order"))
 
         # Add our level* columns
         level_columns = []
@@ -146,10 +154,11 @@ class HierarchyDimension(object):
                             f"level_{i + 1}_{column.name}")
                     )
 
-        reporting_dim_query = select([column for column in node_sort_order_query.columns if column.name not in ["node_json", "node_json_path"]] +
-                                     [literal_column(node_json_expr).label("node_json")] +
-                                     level_columns
-                                     )
+        reporting_dim_query = select(
+            [column for column in node_sort_order_query.columns if column.name not in ["node_json", "node_json_path"]] +
+            [literal_column(node_json_expr).label("node_json")] +
+            level_columns
+            )
 
         reporting_dim_table_name = f"{self.dimension_name}_reporting_dim"
         self.sql_connection.execute(CreateTableAs(reporting_dim_table_name, reporting_dim_query))
@@ -167,7 +176,7 @@ class HierarchyDimension(object):
         # Subset our column list...
         column_list = []
         for column in nodes_alias.columns:
-            if column not in ['node_json', 'node_json_path'] and not re.search ('^level_\d+_\S+$', column.name):
+            if column not in ['node_json', 'node_json_path'] and not re.search('^level_\d+_\S+$', column.name):
                 column_list.append(column)
 
         # No Anchor filter here (we want every node to be an anchor in the aggregation dim)!
@@ -182,7 +191,7 @@ class HierarchyDimension(object):
                 [literal_column(
                     f"array_append(parent_nodes.node_json_path, nodes.node_json)").label(
                     "node_json_path")
-                 ]
+                ]
             ).where(nodes_alias.c.parent_node_id == parent_nodes.c.node_id)
         )
 
@@ -201,10 +210,12 @@ class HierarchyDimension(object):
 
         ancestor_descendant_query = select(ancestor_columns +
                                            descendant_columns
-                                          ).cte()
+                                           ).cte()
 
         aggregation_dim_query = select(ancestor_descendant_query,
-                                       (ancestor_descendant_query.c.descendant_level_number - ancestor_descendant_query.c.ancestor_level_number).label("net_level")
+                                       (
+                                                   ancestor_descendant_query.c.descendant_level_number - ancestor_descendant_query.c.ancestor_level_number).label(
+                                           "net_level")
                                        )
 
         aggregation_dim_table_name = f"{self.dimension_name}_aggregation_dim"

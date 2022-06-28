@@ -4,7 +4,6 @@ import sqlparse
 from classes.hierarchy_dimension_table import HierarchyDimension
 from config import logger
 
-
 # Setup ibis
 ibis.options.interactive = False
 ibis.options.repr.query_text_length = 255
@@ -19,12 +18,11 @@ def main():
     connection = ibis.duckdb.connect('./data/grocery_store.duckdb')
     logger.info(msg=connection.list_tables())
 
-    product_dimension = HierarchyDimension(dimension_name="product",
-                                           ibis_expr=connection.table('product_nodes'),
-                                           node_id_column_name="node_id",
-                                           parent_node_id_column_name="parent_node_id"
-                                           )
-    products = product_dimension.aggregation_dim_ibis_expr
+    products = HierarchyDimension(dimension_name="product",
+                                  ibis_expr=connection.table('product_nodes'),
+                                  node_id_column_name="node_id",
+                                  parent_node_id_column_name="parent_node_id"
+                                  ).aggregation_dim_ibis_expr
     facts = connection.table('sales_facts')
 
     level_indent_pad = ibis.literal('-').lpad(((products.ancestor_level_number - 1) * 5), '-')
