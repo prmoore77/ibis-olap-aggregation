@@ -5,6 +5,7 @@ from sqlalchemy import (Table, Column, select, case, cast, func, literal_column,
                         sql, String, text)
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.expression import ClauseElement, Executable
+import re
 
 
 class CreateTableAs(Executable, ClauseElement):
@@ -19,6 +20,27 @@ def _create_table_as(element, compiler, **kw):
     sql = f"CREATE OR REPLACE TABLE {element.name} AS {compiler.process(element.query)}"
     logger.info(msg=sql)
     return sql
+
+
+def _create_struct_literal(query, table_alias: str = None, override_dict: dict = dict()) -> str:
+    return_str = "{"
+    if table_alias:
+        alias_str = f"{table_alias}."
+    else:
+        alias_str = ""
+
+    for column in query.columns:
+        if override_dict.get(column.name):
+            value_str = override_dict.pop(column.name)
+        else:
+            value_str = alias_str + column.name
+
+        return_str += f"{column.name}: {value_str}, "
+
+    for key, value in override_dict.items():
+        return_str += f"{key}: {value}, "
+
+    return return_str.rstrip(' ,') + "}"
 
 
 class HierarchyDimension(object):
@@ -42,7 +64,9 @@ class HierarchyDimension(object):
 
         self._nodes_query = self._get_nodes_query()
         self._reporting_dim_table_name = self._create_reporting_dim_table()
+        self._reporting_dim_table = Table(self._reporting_dim_table_name, self.metadata, autoload_with=self.sql_connection)
         self._aggregation_dim_table_name = self._create_aggregation_dim_table()
+        self._aggregation_dim_table = Table(self._aggregation_dim_table_name, self.metadata, autoload_with=self.sql_connection)
 
         # Ibis doesn't seem to like the struct type from DuckDB, so we can't use the reporting_dim_table yet...
         # self.reporting_dim_ibis_expr = self.connection.table(self._reporting_dim_table_name)
@@ -60,7 +84,7 @@ class HierarchyDimension(object):
         if self.parent_node_id_column not in self.ibis_expr.columns:
             raise ValueError
 
-    def _get_nodes_query(self) -> str:
+    def _get_nodes_query(self):
         nodes_query = \
             select(self.source_table,
                    case((self.parent_node_id_column.is_(None), True),
@@ -72,49 +96,24 @@ class HierarchyDimension(object):
 
         return nodes_query
 
-    def _generate_level_column_sql(self) -> str:
-        level_column_sql = ""
-        for i in range(1, 11):
-            level_column_sql += \
-                (f"-- Level {i} columns\n"
-                 f", node_json_path[{i}].{self.node_id_column}        AS level_{i}_{self.node_id_column}\n"
-                 f", {', '.join(f'node_json_path[{i}].{column_name}   AS level_{i}_{column_name}' for column_name in self._attribute_column_names)}\n"
-                 )
-        return level_column_sql
-
     def _create_reporting_dim_table(self) -> str:
         if not hasattr(self, "_nodes_query"):
             raise RuntimeError("The nodes_query MUST be created to run this method!")
 
-        anchor_node_json_literal_column_expr: str = ("{node_id: node_id,"
-                                                     " node_natural_key: node_natural_key,"
-                                                     " node_name: node_name,"
-                                                     " level_name: level_name,"
-                                                     " parent_node_id: parent_node_id,"
-                                                     " is_root: is_root,"
-                                                     " is_leaf: is_leaf,"
-                                                     " level_number: 1}"
-                                                     )
-        recursive_node_json_literal_column_expr: str = ("{node_id: nodes.node_id,"
-                                                        " node_natural_key: nodes.node_natural_key,"
-                                                        " node_name: nodes.node_name,"
-                                                        " level_name: nodes.level_name,"
-                                                        " parent_node_id: nodes.parent_node_id,"
-                                                        " is_root: nodes.is_root,"
-                                                        " is_leaf: nodes.is_leaf,"
-                                                        " level_number: (parent_nodes.level_number + 1)}"
-                                                        )
+        anchor_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query, table_alias="nodes", override_dict=dict(level_number=1))
 
-        parent_nodes = select([column for column in self._nodes_query.columns] +
+        recursive_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query, table_alias="nodes", override_dict=dict(level_number="(parent_nodes.level_number + 1)"))
+
+        nodes_alias = self._nodes_query.alias("nodes")
+        parent_nodes = select([column for column in nodes_alias.columns] +
                               [literal_column("1").label("level_number"),
                                literal_column(anchor_node_json_literal_column_expr).label("node_json"),
                                literal_column(f"[{anchor_node_json_literal_column_expr}]").label("node_json_path")
                                ]
                               ). \
-            where(self._nodes_query.c.is_root == True). \
+            where(nodes_alias.c.is_root == True). \
             cte("parent_nodes", recursive=True)
 
-        nodes_alias = self._nodes_query.alias("nodes")
         recursive_cte_query = parent_nodes.union_all(
             select(
                 [column for column in nodes_alias.columns] +
@@ -127,178 +126,88 @@ class HierarchyDimension(object):
             ).where(nodes_alias.c.parent_node_id == parent_nodes.c.node_id)
         )
 
+        node_sort_order_query = select([column for column in recursive_cte_query.columns] +
+                                     [func.row_number().over(
+                                         order_by=func.replace(cast(recursive_cte_query.c.node_json_path, String), ']',
+                                                               '').asc()).label("node_sort_order")
+                                      ]
+                                     ).cte("node_sort_order_query")
+
+        node_json_expr: str = _create_struct_literal(query=self._nodes_query, table_alias=None, override_dict=dict(level_number="level_number", node_sort_order="node_sort_order"))
+
         # Add our level* columns
         level_columns = []
         for i in range(10):
-            for column in recursive_cte_query.columns:
-                if column.name not in ["node_json", "node_json_path", "is_root", "is_leaf"]:
+            for column in node_sort_order_query.columns:
+                if column.name not in ["node_json", "node_json_path", "is_root", "is_leaf", "node_sort_order"]:
                     level_columns.append(
-                        func.struct_extract(func.list_extract(recursive_cte_query.c.node_json_path, (i + 1)),
+                        func.struct_extract(func.list_extract(node_sort_order_query.c.node_json_path, (i + 1)),
                                             literal_column(f"'{column.name}'")).label(
                             f"level_{i + 1}_{column.name}")
                     )
 
-        reporting_dim_query = select([column for column in recursive_cte_query.columns] +
-                                     [func.row_number().over(
-                                         order_by=func.replace(cast(recursive_cte_query.c.node_json_path, String), ']',
-                                                               '').asc()).label("node_sort_order")
-                                      ] +
+        reporting_dim_query = select([column for column in node_sort_order_query.columns if column.name not in ["node_json", "node_json_path"]] +
+                                     [literal_column(node_json_expr).label("node_json")] +
                                      level_columns
                                      )
 
-        self.sql_connection.execute(CreateTableAs("larry", select(recursive_cte_query)))
-        self.sql_connection.execute(CreateTableAs("larry_bird", reporting_dim_query))
+        reporting_dim_table_name = f"{self.dimension_name}_reporting_dim"
+        self.sql_connection.execute(CreateTableAs(reporting_dim_table_name, reporting_dim_query))
 
-        sql_text = (f"CREATE OR REPLACE TABLE {reporting_dim_table_name}\n"
-                    f"AS\n"
-                    f"WITH RECURSIVE parent_nodes (\n"
-                    f"   {self.node_id_column}\n"
-                    f" , {', '.join(column_name for column_name in self._attribute_columns)}\n"
-                    f" , {self.parent_node_id_column}\n"
-                    f" , is_root\n"
-                    f" , is_leaf\n"
-                    f" , level_number\n"
-                    f" , node_json\n"
-                    f" , node_json_path\n"
-                    f")\n"
-                    f"AS (--Anchor Clause\n"
-                    f"    SELECT\n"
-                    f"        {self.node_id_column}\n"
-                    f"      , {', '.join(column_name for column_name in self._attribute_columns)}\n"
-                    f"      , {self.parent_node_id_column}\n"
-                    f"      , is_root\n"
-                    f"      , is_leaf\n"
-                    f"      , 1 AS level_number\n"
-                    f"      , {{  {self.node_id_column}: {self.node_id_column}\n"
-                    f"          , {', '.join(f'{column_name}: {column_name}' for column_name in self._attribute_columns)}\n"
-                    f"          , is_root: is_root\n"
-                    f"          , is_leaf: is_leaf\n"
-                    f"          , level_number: 1 }} AS node_json\n"
-                    f"      , [{{  {self.node_id_column}: {self.node_id_column}\n"
-                    f"          , {', '.join(f'{column_name}: {column_name}' for column_name in self._attribute_columns)}\n"
-                    f"          , is_root: is_root\n"
-                    f"          , is_leaf: is_leaf\n"
-                    f"          , level_number: 1 }}] AS node_json_path\n"
-                    f"       FROM {self._nodes_temp_table_name}\n"
-                    f"      WHERE is_root = TRUE\n"
-                    f"    --\n"
-                    f"    UNION ALL\n"
-                    f"    -- Recursive Clause\n"
-                    f"    SELECT\n"
-                    f"        nodes.{self.node_id_column}\n"
-                    f"      , {', '.join(f'nodes.{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"      , nodes.{self.parent_node_id_column}\n"
-                    f"      , nodes.is_root\n"
-                    f"      , nodes.is_leaf\n"
-                    f"      , parent_nodes.level_number + 1 AS level_number\n"
-                    f"      , {{  {self.node_id_column}: nodes.{self.node_id_column}\n"
-                    f"          , {', '.join(f'{column_name}: nodes.{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"          , is_root: nodes.is_root\n"
-                    f"          , is_leaf: nodes.is_leaf\n"
-                    f"          , level_number: parent_nodes.level_number + 1 }} AS node_json\n"
-                    f"      , array_append (parent_nodes.node_json_path\n"
-                    f"          , {{  {self.node_id_column}: nodes.{self.node_id_column}\n"
-                    f"            , {', '.join(f'{column_name}: nodes.{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"            , is_root: nodes.is_root\n"
-                    f"            , is_leaf: nodes.is_leaf\n"
-                    f"            , level_number: parent_nodes.level_number + 1 }}) AS node_json_path\n"
-                    f"       FROM {self._nodes_temp_table_name} AS nodes\n"
-                    f"          JOIN\n"
-                    f"            parent_nodes\n"
-                    f"          ON nodes.{self.parent_node_id_column} = parent_nodes.{self.node_id_column}\n"
-                    f")\n"
-                    f"SELECT {self.node_id_column}\n"
-                    f"     , {', '.join(f'{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"     , {self.parent_node_id_column}\n"
-                    f"     , is_root\n"
-                    f"     , is_leaf\n"
-                    f"     , level_number\n"
-                    f"     , {{node_id: {self.node_id_column},\n"
-                    f"        {', '.join(f'{column_name}: {column_name}' for column_name in self._attribute_columns)}\n,"
-                    f"        is_root: is_root,\n"
-                    f"        is_leaf: is_leaf,\n"
-                    f"        level_number: level_number,\n"
-                    f"        node_sort_order: {node_sort_order_expression}}} AS node_json\n"
-                    f"      , node_json_path\n"
-                    f"      , {node_sort_order_expression} AS node_sort_order\n"
-                    f"      {self._generate_level_column_sql()}"
-                    f"  FROM parent_nodes\n"
-                    f" ORDER BY node_sort_order ASC\n"
-                    )
-
-        self.execute_sql(sql_text=sql_text)
         return reporting_dim_table_name
 
     def _create_aggregation_dim_table(self) -> str:
         if not self._reporting_dim_table_name:
             raise RuntimeError("The reporting_dim_table MUST be created to run this method!")
 
-        aggregation_dim_table_name = f"{self.dimension_name}_aggregation_dim"
-        sql_text = (f"CREATE OR REPLACE TABLE {aggregation_dim_table_name}\n"
-                    f"AS\n"
-                    f"WITH RECURSIVE parent_nodes (\n"
-                    f"   {self.node_id_column}\n"
-                    f" , {', '.join(column_name for column_name in self._attribute_columns)}\n"
-                    f" , {self.parent_node_id_column}\n"
-                    f" , is_root\n"
-                    f" , is_leaf\n"
-                    f" , level_number\n"
-                    f" , node_sort_order\n"
-                    f" , node_json\n"
-                    f" , node_json_path\n"
-                    f")\n"
-                    f"AS (--Anchor Clause\n"
-                    f"    SELECT\n"
-                    f"        {self.node_id_column}\n"
-                    f"      , {', '.join(column_name for column_name in self._attribute_columns)}\n"
-                    f"      , {self.parent_node_id_column}\n"
-                    f"      , is_root\n"
-                    f"      , is_leaf\n"
-                    f"      , level_number\n"
-                    f"      , node_sort_order"
-                    f"      , node_json\n"
-                    f"      -- We must start a new NODE_JSON array b/c each node will be represented as a root node...\n"
-                    f"      , [node_json] AS node_json_path\n"
-                    f"       FROM {self._reporting_dim_table_name}\n"
-                    f"      -- We do NOT filter the anchor, because we want EVERY node in the hierarchy to be a root node...\n"
-                    f"      --\n"
-                    f"    UNION ALL\n"
-                    f"    -- Recursive Clause\n"
-                    f"    SELECT\n"
-                    f"        nodes.{self.node_id_column}\n"
-                    f"      , {', '.join(f'nodes.{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"      , nodes.{self.parent_node_id_column}\n"
-                    f"      , nodes.is_root\n"
-                    f"      , nodes.is_leaf\n"
-                    f"      , nodes.level_number\n"
-                    f"      , nodes.node_sort_order\n"
-                    f"      , nodes.node_json\n"
-                    f"      , array_append (parent_nodes.node_json_path\n"
-                    f"                    , nodes.node_json) AS node_json_path"
-                    f"       FROM {self._reporting_dim_table_name} AS nodes\n"
-                    f"          JOIN\n"
-                    f"            parent_nodes\n"
-                    f"          ON nodes.{self.parent_node_id_column} = parent_nodes.{self.node_id_column}\n"
-                    f")\n"
-                    f"SELECT -- Ancestor columns (we take the first array element to get the anchor root)\n"
-                    f"       node_json_path[1].{self.node_id_column}              AS ancestor_{self.node_id_column}\n"
-                    f"     , {', '.join(f'node_json_path[1].{column_name}         AS ancestor_{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"     , node_json_path[1].level_number                       AS ancestor_level_number\n"
-                    f"     , node_json_path[1].is_root                            AS ancestor_is_root\n"
-                    f"     , node_json_path[1].is_leaf                            AS ancestor_is_leaf\n"
-                    f"     , node_json_path[1].node_sort_order                    AS ancestor_node_sort_order\n"
-                    f"     -- Descendant columns\n"
-                    f"     , {self.node_id_column}                                AS descendant_{self.node_id_column}\n"
-                    f"     , {', '.join(f'{column_name}                           AS descendant_{column_name}' for column_name in self._attribute_columns)}\n"
-                    f"     , level_number                                         AS descendant_level_number\n"
-                    f"     , is_root                                              AS descendant_is_root\n"
-                    f"     , is_leaf                                              AS descendant_is_leaf\n"
-                    f"     , node_sort_order                                      AS descendant_node_sort_order\n"
-                    f"     --\n"
-                    f"     , (level_number - node_json_path[1].level_number)        AS net_level\n"
-                    f"  FROM parent_nodes\n"
-                    f" ORDER BY node_sort_order ASC\n"
-                    )
+        reporting_dim_query = select(self._reporting_dim_table)
 
-        self.execute_sql(sql_text=sql_text)
+        nodes_alias = reporting_dim_query.alias("nodes")
+
+        # Subset our column list...
+        column_list = []
+        for column in nodes_alias.columns:
+            if column not in ['node_json', 'node_json_path'] and not re.search ('^level_\d+_\S+$', column.name):
+                column_list.append(column)
+
+        # No Anchor filter here (we want every node to be an anchor in the aggregation dim)!
+        parent_nodes = select(column_list +
+                              [literal_column(f"[nodes.node_json]").label("node_json_path")]
+                              ). \
+            cte("parent_nodes", recursive=True)
+
+        recursive_cte_query = parent_nodes.union_all(
+            select(
+                column_list +
+                [literal_column(
+                    f"array_append(parent_nodes.node_json_path, nodes.node_json)").label(
+                    "node_json_path")
+                 ]
+            ).where(nodes_alias.c.parent_node_id == parent_nodes.c.node_id)
+        )
+
+        ancestor_columns = []
+        for column in recursive_cte_query.columns:
+            if column.name not in ['node_json', 'node_json_path']:
+                ancestor_columns.append(func.struct_extract(func.list_extract(recursive_cte_query.c.node_json_path, 1),
+                                                            literal_column(f"'{column.name}'")
+                                                            ).label(f"ancestor_{column.name}")
+                                        )
+
+        descendant_columns = []
+        for column in recursive_cte_query.columns:
+            if column.name not in ['node_json', 'node_json_path']:
+                descendant_columns.append(column.label(f"descendant_{column.name}"))
+
+        ancestor_descendant_query = select(ancestor_columns +
+                                           descendant_columns
+                                          ).cte()
+
+        aggregation_dim_query = select(ancestor_descendant_query,
+                                       (ancestor_descendant_query.c.descendant_level_number - ancestor_descendant_query.c.ancestor_level_number).label("net_level")
+                                       )
+
+        aggregation_dim_table_name = f"{self.dimension_name}_aggregation_dim"
+
+        self.sql_connection.execute(CreateTableAs(aggregation_dim_table_name, aggregation_dim_query))
         return aggregation_dim_table_name
