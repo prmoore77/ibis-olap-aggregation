@@ -69,7 +69,7 @@ class HierarchyDimension(object):
         self._aggregation_dim_table = Table(self._aggregation_dim_table_name, self.metadata, autoload_with=self.sql_connection)
 
         # Ibis doesn't seem to like the struct type from DuckDB, so we can't use the reporting_dim_table yet...
-        # self.reporting_dim_ibis_expr = self.connection.table(self._reporting_dim_table_name)
+        # self.reporting_dim_ibis_expr = self.ibis_connection.table(self._reporting_dim_table_name)
 
         self.aggregation_dim_ibis_expr = self.ibis_connection.table(self._aggregation_dim_table_name)
 
