@@ -98,7 +98,8 @@ class HierarchyDimension(object):
 
         recursive_node_json_literal_column_expr: str = _create_struct_literal(query=self._nodes_query,
                                                                               table_alias="nodes",
-                                                                              override_dict=dict(level_number="(parent_nodes.level_number + 1)")
+                                                                              override_dict=dict(
+                                                                                  level_number="(parent_nodes.level_number + 1)")
                                                                               )
 
         nodes_alias = self._nodes_query.alias("nodes")

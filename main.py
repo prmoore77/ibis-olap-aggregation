@@ -25,7 +25,7 @@ def main():
                                   ).aggregation_dim_ibis_expr
     facts = connection.table('sales_facts')
 
-    level_indent_pad = ibis.literal('-').lpad(((products.ancestor_level_number - 1) * 5), '-')
+    level_indent_pad = ibis.literal('-').lpad(((products.ancestor_level_number - 1) * 7), '-')
     product_level_name = level_indent_pad.concat(products.ancestor_level_name)
     product_node_name = level_indent_pad.concat(products.ancestor_node_name)
 
