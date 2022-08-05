@@ -17,7 +17,8 @@ class CreateTableAs(Executable, ClauseElement):
 @compiles(CreateTableAs, "duckdb")
 def _create_table_as(element, compiler, **kw):
     sql = f"CREATE OR REPLACE TABLE {element.name} AS {compiler.process(element.query)}"
-    logger.info(msg=sql)
+    logged_sql = f"CREATE OR REPLACE TABLE {element.name} AS " + str(element.query.compile(compile_kwargs={"literal_binds": True}))
+    logger.info(msg=logged_sql)
     return sql
 
 
