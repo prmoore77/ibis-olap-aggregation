@@ -56,8 +56,13 @@ class HierarchyDimension(object):
         self.ibis_connection = ibis_expr._find_backend()
         self.metadata = self.ibis_connection.meta
         self.sql_connection = self.metadata.bind.engine
-        # TODO: try to find an unprotected attribute for this...
-        self.source_table_name = self.ibis_expr._key[2].name
+
+        try:
+            # If Ibis version is 3.2.* - we use a protected attribute to get the source table name...
+            self.source_table_name = self.ibis_expr._key[2].name
+        except AttributeError:
+            self.source_table_name = self.ibis_expr.get_name()
+
         self.source_table: Table = self.metadata.tables[self.source_table_name]
         self.node_id_column: Column = self.source_table.columns[node_id_column_name]
         self.parent_node_id_column: Column = self.source_table.columns[parent_node_id_column_name]

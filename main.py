@@ -11,7 +11,7 @@ ibis.options.repr.query_text_length = 255
 # Setup pandas
 pd.set_option("display.width", 0)
 pd.set_option("display.max_columns", 99)
-pd.set_option("display.max_colwidth", -1)
+pd.set_option("display.max_colwidth", None)
 
 
 def main():

@@ -12,10 +12,10 @@ pip install -r requirements.txt
 ```
 
 ## Source Data
-To get the source DuckDB database - run this from the root of the repo:
+To create the sample DuckDB database - run this from the root of the repo:
 
 ```shell
-python -m get_data
+python -m create_database
 ```
 
 # Running the aggregation
