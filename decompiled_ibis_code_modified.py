@@ -1,8 +1,9 @@
 import ibis
-import pandas as pd
 
 # Manually added code section
 # -----------------------------------
+
+import pandas as pd
 
 # Setup ibis
 ibis.options.interactive = False
