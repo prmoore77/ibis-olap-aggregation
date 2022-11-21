@@ -1,4 +1,5 @@
 import ibis
+from ibis import _
 import pandas as pd
 import sqlparse
 from classes.hierarchy_dimension_table import HierarchyDimension
@@ -34,17 +35,17 @@ def main():
                                )
     sales_fact_aggregation = \
         (facts.join(products, predicates=(facts.product_id == products.descendant_node_natural_key))
-         .group_by([products.product_node_name,
-                    products.product_level_name,
-                    products.ancestor_node_sort_order
+         .group_by([_.product_node_name,
+                    _.product_level_name,
+                    _.ancestor_node_sort_order
                     ]
                    )
-         .aggregate(sum_sales_amount=facts.sales_amount.sum(),
-                    sum_unit_quantity=facts.unit_quantity.sum(),
-                    distinct_customer_count=facts.customer_id.nunique(),
-                    count_of_fact_records=facts.count()
+         .aggregate(sum_sales_amount=_.sales_amount.sum(),
+                    sum_unit_quantity=_.unit_quantity.sum(),
+                    distinct_customer_count=_.customer_id.nunique(),
+                    count_of_fact_records=_.count()
                     )
-         .sort_by(products.ancestor_node_sort_order)
+         .order_by(_.ancestor_node_sort_order)
          )[
             'product_node_name',
             'product_level_name',
@@ -65,6 +66,10 @@ def main():
 
     df = sales_fact_aggregation.execute()
     print(df)
+
+    # Try decompiling the expression to Ibis code...
+    code = ibis.decompile(sales_fact_aggregation, format=True)
+    print(code)
 
 
 if __name__ == '__main__':
